@@ -242,8 +242,199 @@
 
 </details>
 
-
 ## **📉 댓글 작성/수정 및 신고 시 추가 학습**
+
+- 활동, 모임 홍보, 위시리스트의 각 댓글을 작성/수정 시 모두 같은 로직으로 추가 학습을 진행합니다.
+
+- 해당 댓글의 내용을 통해 예측하고 그 결과가 욕설일 경우 불러올 파이프라인 모델의 `CountVectorizer()`에 전달하여 벡터화 합니다.
+
+- 백터화 된 값을 파이프라인 모델의 `MultinomialNB()`에 전달하여 `partial_fit()`을 통해 추가 학습을 진행합니다.
+
+- 먼저 같은 코드가 반복되지 않도록 로직을 모듈화하여 했습니다. 또한, 예측 결과가 비속어 일 경우 훈련용 데이터 테이블에 insert되도록 했습니다.
+
+- <details>
+    <summary>Click to see full code</summary>
+    
+      import os
+      from pathlib import Path
+      import joblib
+      from ai.models import ReplyAi
+      
+      
+      def check_the_comments(reply_content):
+          result = 'success'
+          
+          model_file_path = os.path.join(Path(__file__).resolve().parent.parent.parent.parent, 'ai/ai/reply_default_model.pkl')
+          model = joblib.load(model_file_path)
+          X_train = [reply_content]
+          prediction = model.predict(X_train)
+      
+          if prediction[0] == 1:
+              # 추가 fit
+              transformed_X_train = model.named_steps['count_vectorizer'].transform(X_train)
+              model.named_steps['multinomial_NB'].partial_fit(transformed_X_train, prediction)
+              joblib.dump(model, model_file_path)
+      
+              # insert
+              ReplyAi.objects.create(comment=X_train[0], target=prediction[0])
+              result = 'profanity'
+      
+          return result
+  
+</details>
+
+- 3개의 페이지에 대한 post 요청(댓글 작성)에 응답하는 ActivityReplyAPI, ClubPrPostReplyAPI, ReplyWriteAPI의 post() 메소드 중, 추가 학습 관련 코드입니다.
+
+- <details>
+    <summary>Click to see full ActivityReplyAPI code</summary>
+    
+      def post(self, request):
+         data = request.data
+         data = {
+            'reply_content': data['reply_content'],
+            'activity_id': data['activity_id'],
+            'member_id': data['member_id']
+         }
+         
+         result = check_the_comments(data['reply_content'])
+         
+         if result == 'profanity':
+            return Response(result)
+         
+         activity_reply = ActivityReply.objects.create(**data)
+
+         ....
+
+         return Response("success")
+
+</details>
+
+- <details>
+    <summary>Click to see full ClubPrPostReplyAPI code</summary>
+    
+      def post(self, request):
+         data = request.data
+         
+         data = {
+            'reply_content': data['reply_content'],
+            'club_post_id': data['club_post_id'],
+            'member_id': request.session['member']['id']
+         }
+         
+         result = check_the_comments(data['reply_content'])
+         
+         if result == 'profanity':
+            return Response(result)
+         
+         post_reply = ClubPostReply.objects.create(**data)
+
+         ....
+
+         return Response("success")
+
+</details>
+
+- <details>
+    <summary>Click to see full ReplyWriteAPI의 code</summary>
+    
+      def post(self, request):
+         data = request.data
+         data = {
+            'reply_content': data['reply_content'],
+            'wishlist_id': data['wishlist_id'],
+            'member_id': request.session['member']['id']
+         }
+         
+         result = check_the_comments(data['reply_content'])
+         
+         if result == 'profanity':
+            return Response(result)
+         
+         WishlistReply.objects.create(**data)
+         
+         return Response('success')
+
+</details>
+
+- 3개의 페이지에 대한 patch 요청(댓글 수정)에 응답하는 ActivityReplyAPI, ClubPrPostReplyAPI, ReplyActionAPI의 patch() 메소드 중, 추가 학습 관련 코드입니다.
+
+- <details>
+    <summary>Click to see full ActivityReplyAPI code</summary>
+    
+      def patch(self, request):
+         activity_id = request.data['activity_id']
+         member_id = request.data['member_id']
+         reply_content = request.data['reply_content']
+         id = request.data['id']
+         
+         result = check_the_comments(reply_content)
+         
+         if result == 'profanity':
+            return Response(result)
+         
+         activity_reply = ActivityReply.enabled_objects.get(id=id, activity_id=activity_id, member_id=member_id)
+         
+         activity_reply.reply_content = reply_content
+         activity_reply.updated_date = timezone.now()
+         activity_reply.save(update_fields=['reply_content', 'updated_date'])
+         
+         return Response("success")
+  
+</details>
+
+- <details>
+    <summary>Click to see full ClubPrPostReplyAPI code</summary>
+    
+      def patch(self, request):
+         data = request.data
+         reply_content = data['reply_content']
+         reply_id = data['id']
+         
+         result = check_the_comments(reply_content)
+         
+         if result == 'profanity':
+            return Response(result)
+         
+         # 전달 받은 댓글 id를 통해 수정할 댓글 조회
+         club_post_reply = ClubPostReply.enabled_objects.get(id=reply_id)
+         club_post_reply.reply_content = reply_content
+         club_post_reply.updated_date = timezone.now()
+         club_post_reply.save(update_fields=['reply_content', 'updated_date'])
+         
+         return Response("success")
+
+</details>
+
+- <details>
+    <summary>Click to see full ReplyActionAPI의 code</summary>
+    
+      def patch(self, request, reply_id):
+         data = request.data
+         reply_content = data['reply_content']
+         
+         result = check_the_comments(data['reply_content'])
+         
+         if result == 'profanity':
+            return Response(result)
+         
+         updated_date = timezone.now()
+         
+         reply = WishlistReply.objects.get(id=reply_id)
+         reply.reply_content = reply_content
+         reply.updated_date = updated_date
+         
+         reply.save(update_fields=['reply_content', 'updated_date'])
+         
+         return Response(reply_content)
+
+</details>
+
+- 욕설일 경우 alert을 통해 경고문을 보여줍니다.
+
+![스크린샷 2024-05-24 020419](https://github.com/gyoungDeok-Seo/django_with_ai/assets/142222116/9c2756bd-55af-443c-ba05-221f63f1e9b4)
+
+![스크린샷 2024-05-24 020509](https://github.com/gyoungDeok-Seo/django_with_ai/assets/142222116/15936155-c1d0-4ecc-b2bc-2ae0ae91aa9b)
+
 
 
 
