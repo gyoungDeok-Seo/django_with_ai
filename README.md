@@ -11,8 +11,7 @@
 4. 사전 모델 학습
 5. 사전 모델 평가
 6. 댓글 작성/수정 및 신고 시 추가 학습
-7. Django 프로젝트 상용화화
-8. 트러블 슈팅 및 느낀점
+7. 트러블 슈팅 및 느낀점
 
 ## **📋 개요**
 
@@ -244,11 +243,15 @@
 
 ## **📉 댓글 작성/수정 및 신고 시 추가 학습**
 
+### **댓글 작성/수정 추가 학습**
+
 - 활동, 모임 홍보, 위시리스트의 각 댓글을 작성/수정 시 모두 같은 로직으로 추가 학습을 진행합니다.
 
 - 해당 댓글의 내용을 통해 예측하고 그 결과가 욕설일 경우 불러올 파이프라인 모델의 `CountVectorizer()`에 전달하여 벡터화 합니다.
 
 - 백터화 된 값을 파이프라인 모델의 `MultinomialNB()`에 전달하여 `partial_fit()`을 통해 추가 학습을 진행합니다.
+
+- - 정답 Target(y)은 비속어(1)로 설정합니다.
 
 - 먼저 같은 코드가 반복되지 않도록 로직을 모듈화하여 했습니다. 또한, 예측 결과가 비속어 일 경우 훈련용 데이터 테이블에 insert되도록 했습니다.
 
@@ -436,6 +439,84 @@
 ![스크린샷 2024-05-24 020509](https://github.com/gyoungDeok-Seo/django_with_ai/assets/142222116/15936155-c1d0-4ecc-b2bc-2ae0ae91aa9b)
 
 
+### **댓글 신고 추가 학습**
+
+- 활동, 모임 홍보, 위시리스트의 각 댓글을 신고 시 추가 학습을 진행합니다.
+
+- 기존 데이터의 삭제를 위해 댓글의 id와 어떤 글의 댓글(reply_type)인지 request로 받고 그에 맞는 클래스에서 객체화 합니다.
+
+- 해당 댓글의 내용을 불러온 파이프라인 모델의 `CountVectorizer()`에 전달하여 벡터화 합니다.
+
+- 백터화 된 값을 파이프라인 모델의 `MultinomialNB()`에 전달하여 `partial_fit()`을 통해 추가 학습을 진행합니다.
+
+- 이때 정답 Target(y)은 비속어(1)로 설정합니다.
+
+- 훈련 테이블에 정보를 insert하고 객체를 통해 기존 댓글 테이블에서 데이터를 삭제합니다.
+
+- 3개의 페이지에 대한 post 요청(댓글 신고)에 응답하는 ReportReplyAPI의 post() 메소드 중, 추가 학습 관련 코드입니다.
+
+- <details>
+    <summary>Click to see full ReportReplyAPI code</summary>
+    
+      def post(self, request):
+         reply_id = request.data['reply_id']
+         reply_type = request.data['reply_type']
+         reply = None
+         
+         if reply_type == 'activity':
+            reply = ActivityReply.objects.get(id=reply_id)
+         
+         elif reply_type == 'club_post':
+            reply = ClubPostReply.objects.get(id=reply_id)
+         
+         else:
+            reply = WishlistReply.objects.get(id=reply_id)
+         
+         # 모델소환
+         model_file_path = os.path.join(Path(__file__).resolve().parent, 'ai/ai/reply_default_model.pkl')
+         model = joblib.load(model_file_path)
+         X_train = [reply.reply_content]
+         
+         # 추가 fit
+         transformed_X_train = model.named_steps['count_vectorizer'].transform(X_train)
+         model.named_steps['multinomial_NB'].partial_fit(transformed_X_train, [1])
+         joblib.dump(model, model_file_path)
+         
+         # insert
+         ReplyAi.objects.create(comment=X_train[0], target=1)
+         reply.delete()
+         
+         return Response("profanity")
+
+</details>
+
+## **📉 트러블 슈팅 및 느낀점**
+
+### 1) 사전 모델 평가에서 너무 낮은 점수
+
+가. 문제 발생
+
+- 목표를 평가 점수 0.7이상으로 선정하고 수집한 약 5,000개의 데이터를 가지고 훈련 후 평가를 실시 했을 때 0.62로 낮은 점수가 나오는 문제가 발생했습니다.
+
+나. 원인 추론
+
+- 데이터 전처리 과정을 실시하지 않아 발생한 문제라고 판단하여 정규식을 통한 특수문자 및 영어를 제외한 외국어를 제거하고 훈련을 실시했는데 오히려 0.58로 점수가 더 떨어지는 것을 확인했습니다.
+- 연속되는 공백이 존제하는 데이터를 식별하여 이에 대한 공백 축소도 진행했으나 0.55로 평가 점수가 더 떨어지는 것을 확인했습니다. 
+- 불용어(의미를 전달하지 않는 단어들을 가리키는 용어)를 제거하였음에도 동일한 점수가 나오는 것을 확인하고 전처리의 문제가 아니라고 판단했습니다.
+
+다. 해결 방안
+
+- 다른 팀의 댓글 서비스 담당자와 비교했을 때 똑같은 문제가 발생하는 것을 확인했고 데이터 수의 문제라 생각하고,  
+  3명의 데이터 세트를 통합하여 데이터 수를 늘려서 평가 점수를 확인했을 때 0.68로 더 높게 나오는걸 확인할 수 있었습니다.
+- 목표로 선정한 0.7까지 높이기 위해 원인 추론 과정에서 했던 전처리 과정을 추가해서 진행했습니다.
+
+라. 결과 확인
+
+- 평가 점수는 0.71로 확실히 성능이 향상되는 것을 확인할 수 있었습니다.
+
+### 2) 느낀점
+
+- 처음 욕설 
 
 
 
