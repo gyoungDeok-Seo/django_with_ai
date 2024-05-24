@@ -2,44 +2,115 @@
 
 ## **💡목차**
 
-1. 개요
-2. 데이터 수집
+1. 데이터 수집
    1) 크롤링
    2) 데이터 세트
    3) 데이터 통합
-3. 데이터 전처리
-4. 사전 모델 학습
-5. 사전 모델 평가
-6. 댓글 작성/수정 및 신고 시 추가 학습
-7. 트러블 슈팅 및 느낀점
-
-## **📋 개요**
-
-### 댓글 비속어어 검열 서비스  
-이 서비스는 활동, 모임 홍보, 위시리스트 상세 페이지에서 댓글 작성 및 수정 시 욕설을 검열해주는 기능을 제공합니다.  
-
-사용자가 댓글을 작성하거나 수정할 때, 입력된 내용은 `Count Vectorizer`를 사용하여 벡터화되며,  
-`Multinomial Naive Bayes` 모델을 통해 텍스트가 분류됩니다.  
-
-이 과정에서 댓글 내용이 욕설로 판별될 경우, 댓글 작성 및 수정을 차단하고 경고 메시지를 표시합니다.  
-
-### 댓글 신고 및 처리 서비스  
-이 서비스는 작성된 댓글을 다른 사용자가 신고할 수 있는 기능을 제공합니다.  
-
-사용자가 댓글을 신고하면, 해당 댓글은 자동으로 삭제되며, 이를 통해 커뮤니티의 건전성을 유지할 수 있습니다.  
-
-원래는 신고된 댓글을 관리자 페이지에서 관리자가 검토하여 처리해야 하지만,  
-현재 신고 관리 페이지가 없기 때문에 사용자가 신고할 때 자동으로 처리가 이루어지도록 구성했습니다.  
-
-### AI 기반 욕설 필터링 및 학습  
-댓글 신고 서비스는 신고된 댓글의 내용을 `Count Vectorizer`와 `Multinomial Naive Bayes` 모델을 통해 분석하여 욕설(1)로 추가 학습합니다.  
-
-이를 통해 모델이 지속적으로 학습하고, 더 정확하게 욕설을 필터링할 수 있도록 개선됩니다.  
+2. 데이터 전처리
+3. 사전 모델 학습
+4. 사전 모델 평가
+5. 댓글 작성/수정 및 신고 시 추가 학습
+6. 트러블 슈팅 및 느낀점
 
 ## **📊 데이터 수집 (Data Collection)**
 
 #### 1) 크롤링을 통한 수집
-- 복붙
+- 크롤링을 통하여 댓글을 수집하고 비속어가 포함된 댓글과 포함되지 않은 댓글의 비중을 맞춰주기 위해 전체 댓글 데이터의 45%를 임의로 욕설을 추가합니다.
+
+- <details>
+    <summary>크롤링 로직</summary>
+
+    ```
+    if __name__ == '__main__':
+        warnings.filterwarnings('ignore')
+
+        if os.path.exists('comments.csv'):
+            existing_df = pd.read_csv('comments.csv', encoding='utf-8-sig', index_col=0)
+            comment_final = existing_df['Comment'].tolist()
+        else:
+            existing_df = pd.DataFrame()
+            comment_final = []
+
+        driver = webdriver.Chrome()
+        driver.get("https://www.youtube.com/watch?v=t7w3k3pjZY4")
+        driver.implicitly_wait(3)
+
+        time.sleep(1.5)
+
+        driver.execute_script("window.scrollTo(0, 800)")
+        time.sleep(3)
+
+        last_height = driver.execute_script("return document.documentElement.scrollHeight")
+
+        while True:
+            driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
+            time.sleep(2)
+
+            new_height = driver.execute_script("return document.documentElement.scrollHeight")
+            if new_height == last_height:
+                break
+            last_height = new_height
+
+        time.sleep(1.5)
+
+        html = driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+
+        comment_list = soup.select("span.yt-core-attributed-string")
+
+        for i in range(len(comment_list)):
+            temp_comment = comment_list[i].text.replace('"', '')
+            temp_comment = temp_comment.replace('\n', ' ')
+            temp_comment = temp_comment.strip()
+            comment_final.append(temp_comment)
+        new_df = pd.DataFrame({'Comment': comment_final})
+
+        combined_df = pd.concat([existing_df, new_df]).drop_duplicates().reset_index(drop=True)
+
+        combined_df.to_csv('qweqwe.csv', index=True, encoding='utf-8-sig')
+
+        driver.quit()
+    ```
+
+</details>
+
+- <details>
+    <summary>임의로 욕설을 추가하는 코드</summary>
+
+    ```
+    profanity_list = ['욕설 리스트']
+
+    def add_random_profanity(comment):
+        new_comment = ''
+        for word in comment.split():
+            new_comment += word + ' '
+            if random.random() < 0.4:
+                profanity = random.choice(profanity_list)
+                if random.random() < 0.5:
+                    new_comment += profanity + ' '
+                else:
+                    new_comment += profanity
+        return new_comment.strip()
+
+    co_df = pd.read_csv('comments.csv')
+
+    co_df['Comment'] = co_df['Comment'].apply(add_random_profanity)
+    ```
+
+</details> 
+
+- <details>
+    <summary>추가한 욕설이 있으면 Target 칼럼에 1 없으면 0 값 넣어주기</summary>
+
+    ```
+        profanity_list = ['욕설 리스트']
+
+        profanity_list = [word.replace(' ', '') for word in profanity_list]
+
+        co_df['Profanity'] = co_df['Comment'].apply(lambda x: 1 if any(word in x for word in profanity_list) else 0)
+    ```
+
+</details> 
 
 #### 2) 데이터세트를 통한 수집
 - 데이터 세트 깃허브 주소: https://github.com/2runo/Curse-detection-data
@@ -57,7 +128,25 @@
 ![스크린샷 2024-05-23 154004](https://github.com/gyoungDeok-Seo/django_with_ai/assets/142222116/465922ab-02b4-4265-968d-8ba02c12ef64)
 
 #### 3) 데이터 통합
-- 복붙
+- 수집한 두 데이터 세트를 합치고 결과를 csv파일로 내보냅니다.
+
+ - <details>
+    <summary>두 데이터 세트를 합치는 코드</summary>
+
+    ```
+        df_combined = pd.concat([co_df, bw_df], ignore_index=True)
+    ```
+
+ </details>
+
+- <details>
+    <summary>결과를 CSV 파일로 내보내는 코드</summary>
+
+    ```
+        df_combined.to_csv('merge_comments_data.csv', index=False, encoding='utf-8-sig')
+    ```
+
+ </details>
 
 ## **📊 데이터 전처리 (Data Preprocessing)**
 
@@ -489,6 +578,11 @@
          return Response("profanity")
 
 </details>
+
+![스크린샷 2024-05-24 023009](https://github.com/gyoungDeok-Seo/django_with_ai/assets/142222116/cd82a118-0c70-460d-ac8e-a315443a75fd)
+
+![스크린샷 2024-05-24 023109](https://github.com/gyoungDeok-Seo/django_with_ai/assets/142222116/6e3842db-ebaf-41cd-9704-f76d1c3e5892)
+
 
 ## **📉 트러블 슈팅 및 느낀점**
 
